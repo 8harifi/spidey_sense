@@ -2,36 +2,24 @@ package main
 
 import (
 	"fmt"
-	"github.com/google/gopacket"
-	"github.com/google/gopacket/pcap"
+	"io"
 	"log"
+	"net/http"
 )
 
+func getRoot(w http.ResponseWriter, r *http.Request) {
+	fmt.Printf("got request at /")
+	_, err := io.WriteString(w, "Hello World")
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
 func main() {
-	interfaces, err := pcap.FindAllDevs()
+	http.HandleFunc("/", getRoot)
+
+	err := http.ListenAndServe(":8000", nil)
 	if err != nil {
 		log.Fatal(err)
-	}
-	for index, i := range interfaces {
-		fmt.Printf("[%d] %s\n", index+1, i.Description)
-	}
-	var option int
-	_, err = fmt.Scan(&option)
-	if err != nil {
-		return
-	}
-	fmt.Println(option)
-	fmt.Println(interfaces[option-1])
-	iface := interfaces[option-1]
-
-	handle, err := pcap.OpenLive(iface.Name, 1600, true, pcap.BlockForever)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer handle.Close()
-
-	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
-	for packet := range packetSource.Packets() {
-		fmt.Println(packet.String())
 	}
 }
