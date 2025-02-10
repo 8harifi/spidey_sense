@@ -7,21 +7,78 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
-	"log"
+	"errors"
 	"math/big"
 	"net"
+	"os"
 	"time"
 )
 
 type Certificate struct {
 	certificate   *x509.Certificate
 	privateKey    *rsa.PrivateKey
-	bytes         []byte
 	certPem       bytes.Buffer
 	privateKeyPem bytes.Buffer
 }
 
-func GenerateCertificate(ca *x509.Certificate, caPrivateKey *rsa.PrivateKey) Certificate {
+func LoadOrCreateCACertificate() (*Certificate, error) {
+	pemFileName := "rootCA.pem"
+	keyFileName := "rootCA.key"
+	var certificate *Certificate
+	if _, err := os.Stat(pemFileName); errors.Is(err, os.ErrNotExist) {
+		// the file does not already exist
+		certificate, err = GenerateRootCA()
+		err = os.WriteFile(pemFileName, certificate.certPem.Bytes(), 0644)
+		if err != nil {
+			return nil, err
+		}
+
+		err = os.WriteFile(keyFileName, certificate.privateKeyPem.Bytes(), 0600)
+		if err != nil {
+			return nil, err
+		}
+		return certificate, nil
+	}
+
+	// the file already exists
+
+	certPemFileContent, err := os.ReadFile(pemFileName)
+	if err != nil {
+		return nil, err
+	}
+
+	certBlock, _ := pem.Decode(certPemFileContent)
+	if certBlock == nil {
+		return nil, errors.New("failed to decode PEM block")
+	}
+
+	certificate.certificate, err = x509.ParseCertificate(certBlock.Bytes)
+	if err != nil {
+		return nil, err
+	}
+
+	privateKeyPem, err := os.ReadFile(keyFileName)
+	if err != nil {
+		return nil, err
+	}
+
+	privateKeyBlock, _ := pem.Decode(privateKeyPem)
+	if privateKeyBlock == nil {
+		return nil, errors.New("failed to decode PEM block (private key)")
+	}
+
+	certificate.privateKey, err = x509.ParsePKCS1PrivateKey(privateKeyBlock.Bytes)
+	if err != nil {
+		return nil, err
+	}
+
+	certificate.privateKeyPem = *bytes.NewBuffer(privateKeyPem)
+	certificate.certPem = *bytes.NewBuffer(certBlock.Bytes)
+
+	return certificate, nil
+}
+
+func GenerateCertificate(ca *x509.Certificate, caPrivateKey *rsa.PrivateKey) (*Certificate, error) {
 	cert := &x509.Certificate{
 		SerialNumber: big.NewInt(2019),
 		Subject: pkix.Name{
@@ -42,12 +99,12 @@ func GenerateCertificate(ca *x509.Certificate, caPrivateKey *rsa.PrivateKey) Cer
 
 	certPrivateKey, err := rsa.GenerateKey(rand.Reader, 4096)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 
 	certBytes, err := x509.CreateCertificate(rand.Reader, cert, ca, &certPrivateKey.PublicKey, caPrivateKey)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 
 	certPem := new(bytes.Buffer)
@@ -56,7 +113,7 @@ func GenerateCertificate(ca *x509.Certificate, caPrivateKey *rsa.PrivateKey) Cer
 		Bytes: certBytes,
 	})
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 
 	certPrivKeyPem := new(bytes.Buffer)
@@ -65,18 +122,17 @@ func GenerateCertificate(ca *x509.Certificate, caPrivateKey *rsa.PrivateKey) Cer
 		Bytes: x509.MarshalPKCS1PrivateKey(certPrivateKey),
 	})
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
-	return Certificate{
+	return &Certificate{
 		certificate:   cert,
 		privateKey:    certPrivateKey,
-		bytes:         certBytes,
 		certPem:       *certPem,
 		privateKeyPem: *certPrivKeyPem,
-	}
+	}, nil
 }
 
-func GenerateRootCA() Certificate {
+func GenerateRootCA() (*Certificate, error) {
 	ca := &x509.Certificate{
 		SerialNumber: big.NewInt(2019),
 		Subject: pkix.Name{
@@ -97,11 +153,11 @@ func GenerateRootCA() Certificate {
 
 	caPrivateKey, err := rsa.GenerateKey(rand.Reader, 4096)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 	caBytes, err := x509.CreateCertificate(rand.Reader, ca, ca, caPrivateKey.PublicKey, caPrivateKey)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 
 	caPem := new(bytes.Buffer)
@@ -110,7 +166,7 @@ func GenerateRootCA() Certificate {
 		Bytes: caBytes,
 	})
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 
 	caPrivKeyPem := new(bytes.Buffer)
@@ -119,13 +175,12 @@ func GenerateRootCA() Certificate {
 		Bytes: x509.MarshalPKCS1PrivateKey(caPrivateKey),
 	})
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
-	return Certificate{
+	return &Certificate{
 		certificate:   ca,
 		privateKey:    caPrivateKey,
-		bytes:         caBytes,
 		certPem:       *caPem,
 		privateKeyPem: *caPrivKeyPem,
-	}
+	}, nil
 }
