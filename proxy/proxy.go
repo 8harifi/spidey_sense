@@ -12,20 +12,20 @@ type DownstreamRequest struct {
 	host   string
 	port   string
 	url    string
+	bytes  []byte
 }
 
 func downstreamRequestParser(data []byte) *DownstreamRequest {
 	strData := string(data)
 	strDataLines := strings.Split(strData, "\r\n")
 	method := strings.Split(strDataLines[0], " ")[0]
-	if method == "CONNECT" {
-		return nil
-	}
 	hostName := strings.Split(strDataLines[1], " ")[1]
 	var port string
 	if strings.Contains(hostName, ":") {
 		port = strings.Split(hostName, ":")[1]
 		hostName = strings.Split(hostName, ":")[0]
+	} else if method == "CONNECT" {
+		port = "443"
 	} else {
 		port = "80"
 	}
@@ -34,26 +34,20 @@ func downstreamRequestParser(data []byte) *DownstreamRequest {
 		host:   hostName,
 		port:   port,
 		url:    hostName + ":" + port,
+		bytes:  data,
 	}
 	return &dr
 }
 
-func handleConnection(conn net.Conn) {
-	buffer := make([]byte, 1024)
-	n, err := conn.Read(buffer)
-	if err != nil {
-		log.Fatal(err)
-	}
-	dr := downstreamRequestParser(buffer[:n])
-
-	fmt.Println("[+] got request for " + dr.url)
+func handleHTTPConnection(conn net.Conn, dr *DownstreamRequest) {
+	fmt.Println("[+] got http request for " + dr.url)
 
 	dial, err := net.Dial("tcp", dr.url)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	_, err = dial.Write(buffer[:n])
+	_, err = dial.Write(dr.bytes)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -67,14 +61,41 @@ func handleConnection(conn net.Conn) {
 	if err != nil {
 		log.Fatal(err)
 	}
+}
 
+func handleHTTPSConnection(conn net.Conn, dr *DownstreamRequest, ca Certificate) {
+	fmt.Println("[+] got https request for " + dr.url)
+
+	// cert, err := GenerateCertificate(ca.certificate, ca.privateKey)
+	// if err != nil {
+	//	log.Fatal(err)
+	// }
+
+	dial, err := net.Dial("tcp", dr.url)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer dial.Close()
+	fmt.Println(1)
+
+	_, err = conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(1)
 }
 
 func StartProxy() {
 	listen, err := net.Listen("tcp", ":8080")
 	if err != nil {
-		return
+		log.Fatal(err)
 	}
+
+	ca, err := LoadOrCreateCACertificate()
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	defer func(listen net.Listener) {
 		err := listen.Close()
 		if err != nil {
@@ -87,6 +108,20 @@ func StartProxy() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		go handleConnection(conn)
+
+		buffer := make([]byte, 1024)
+
+		n, err := conn.Read(buffer)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		dr := downstreamRequestParser(buffer[:n])
+
+		if dr.method == "CONNECT" {
+			go handleHTTPSConnection(conn, dr, *ca)
+		} else {
+			go handleHTTPConnection(conn, dr)
+		}
 	}
 }

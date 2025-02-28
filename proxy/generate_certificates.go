@@ -24,10 +24,14 @@ type Certificate struct {
 func LoadOrCreateCACertificate() (*Certificate, error) {
 	pemFileName := "rootCA.pem"
 	keyFileName := "rootCA.key"
-	var certificate *Certificate
+
 	if _, err := os.Stat(pemFileName); errors.Is(err, os.ErrNotExist) {
-		// the file does not already exist
-		certificate, err = GenerateRootCA()
+		// The file does not exist, generate a new one
+		certificate, err := GenerateRootCA()
+		if err != nil {
+			return nil, err
+		}
+
 		err = os.WriteFile(pemFileName, certificate.certPem.Bytes(), 0644)
 		if err != nil {
 			return nil, err
@@ -37,11 +41,11 @@ func LoadOrCreateCACertificate() (*Certificate, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		return certificate, nil
 	}
 
-	// the file already exists
-
+	// The file exists, load it
 	certPemFileContent, err := os.ReadFile(pemFileName)
 	if err != nil {
 		return nil, err
@@ -51,6 +55,9 @@ func LoadOrCreateCACertificate() (*Certificate, error) {
 	if certBlock == nil {
 		return nil, errors.New("failed to decode PEM block")
 	}
+
+	// Allocate memory for certificate struct before assigning fields
+	certificate := &Certificate{}
 
 	certificate.certificate, err = x509.ParseCertificate(certBlock.Bytes)
 	if err != nil {
@@ -72,8 +79,9 @@ func LoadOrCreateCACertificate() (*Certificate, error) {
 		return nil, err
 	}
 
+	// Ensure the buffers are properly initialized
 	certificate.privateKeyPem = *bytes.NewBuffer(privateKeyPem)
-	certificate.certPem = *bytes.NewBuffer(certBlock.Bytes)
+	certificate.certPem = *bytes.NewBuffer(certPemFileContent)
 
 	return certificate, nil
 }
@@ -155,7 +163,7 @@ func GenerateRootCA() (*Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
-	caBytes, err := x509.CreateCertificate(rand.Reader, ca, ca, caPrivateKey.PublicKey, caPrivateKey)
+	caBytes, err := x509.CreateCertificate(rand.Reader, ca, ca, &caPrivateKey.PublicKey, caPrivateKey)
 	if err != nil {
 		return nil, err
 	}
