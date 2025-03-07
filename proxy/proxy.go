@@ -1,7 +1,9 @@
 package proxy
 
 import (
+	"crypto/tls"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"strings"
@@ -66,23 +68,43 @@ func handleHTTPConnection(conn net.Conn, dr *DownstreamRequest) {
 func handleHTTPSConnection(conn net.Conn, dr *DownstreamRequest, ca Certificate) {
 	fmt.Println("[+] got https request for " + dr.url)
 
-	// cert, err := GenerateCertificate(ca.certificate, ca.privateKey)
-	// if err != nil {
-	//	log.Fatal(err)
-	// }
-
-	dial, err := net.Dial("tcp", dr.url)
+	_, err := conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer dial.Close()
-	fmt.Println(1)
 
-	_, err = conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+	cert, err := GenerateCertificate(ca.certificate, ca.privateKey)
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	tlsCert, err := tls.X509KeyPair(cert.certPem.Bytes(), cert.privateKeyPem.Bytes())
+
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{tlsCert},
+	}
+	tlsConn := tls.Server(conn, tlsConfig)
+	defer tlsConn.Close()
+
+	err = tlsConn.Handshake()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Println("[+] TLS handshake to the client successful for", dr.url)
+
+	targetConn, err := net.Dial("tcp", dr.url)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer targetConn.Close()
 	fmt.Println(1)
+
+	go func() {
+		_, _ = io.Copy(targetConn, tlsConn)
+	}()
+
+	_, _ = io.Copy(tlsConn, targetConn)
 }
 
 func StartProxy() {
