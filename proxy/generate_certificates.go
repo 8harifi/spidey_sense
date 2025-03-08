@@ -8,8 +8,9 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
+	"log"
 	"math/big"
-	"net"
 	"os"
 	"time"
 )
@@ -26,7 +27,7 @@ func LoadOrCreateCACertificate() (*Certificate, error) {
 	keyFileName := "rootCA.key"
 
 	if _, err := os.Stat(pemFileName); errors.Is(err, os.ErrNotExist) {
-		// The file does not exist, generate a new one
+		fmt.Println("[DEBUG] rootCA.pem not found, generating a new CA")
 		certificate, err := GenerateRootCA()
 		if err != nil {
 			return nil, err
@@ -42,10 +43,12 @@ func LoadOrCreateCACertificate() (*Certificate, error) {
 			return nil, err
 		}
 
+		fmt.Println("[DEBUG] New CA certificate and key generated")
 		return certificate, nil
 	}
 
-	// The file exists, load it
+	fmt.Println("[DEBUG] Loading existing CA certificate and key")
+
 	certPemFileContent, err := os.ReadFile(pemFileName)
 	if err != nil {
 		return nil, err
@@ -53,14 +56,14 @@ func LoadOrCreateCACertificate() (*Certificate, error) {
 
 	certBlock, _ := pem.Decode(certPemFileContent)
 	if certBlock == nil {
-		return nil, errors.New("failed to decode PEM block")
+		fmt.Println("[ERROR] Failed to decode PEM block (certificate)")
+		return nil, errors.New("failed to decode PEM block (certificate)")
 	}
 
-	// Allocate memory for certificate struct before assigning fields
 	certificate := &Certificate{}
-
 	certificate.certificate, err = x509.ParseCertificate(certBlock.Bytes)
 	if err != nil {
+		fmt.Println("[ERROR] Failed to parse CA certificate:", err)
 		return nil, err
 	}
 
@@ -71,11 +74,13 @@ func LoadOrCreateCACertificate() (*Certificate, error) {
 
 	privateKeyBlock, _ := pem.Decode(privateKeyPem)
 	if privateKeyBlock == nil {
+		fmt.Println("[ERROR] Failed to decode PEM block (private key)")
 		return nil, errors.New("failed to decode PEM block (private key)")
 	}
 
 	certificate.privateKey, err = x509.ParsePKCS1PrivateKey(privateKeyBlock.Bytes)
 	if err != nil {
+		fmt.Println("[ERROR] Failed to parse CA private key:", err)
 		return nil, err
 	}
 
@@ -83,13 +88,29 @@ func LoadOrCreateCACertificate() (*Certificate, error) {
 	certificate.privateKeyPem = *bytes.NewBuffer(privateKeyPem)
 	certificate.certPem = *bytes.NewBuffer(certPemFileContent)
 
+	// **Debugging Output**
+	fmt.Println("[DEBUG] Successfully loaded CA certificate and private key")
+	fmt.Println("[DEBUG] CA Certificate Subject:", certificate.certificate.Subject.CommonName)
+	fmt.Println("[DEBUG] CA Key Size:", certificate.privateKey.N.BitLen())
+
 	return certificate, nil
 }
 
-func GenerateCertificate(ca *x509.Certificate, caPrivateKey *rsa.PrivateKey) (*Certificate, error) {
+func GenerateCertificate(ca *x509.Certificate, caPrivateKey *rsa.PrivateKey, host string) (*Certificate, error) {
+	if ca == nil {
+		log.Fatal("[ERROR] CA certificate is nil in GenerateCertificate!")
+	}
+	if caPrivateKey == nil {
+		log.Fatal("[ERROR] CA private key is nil in GenerateCertificate!")
+	}
+	if ca.PublicKey == nil {
+		log.Fatal("[ERROR] CA public key is nil in GenerateCertificate!")
+	}
+
 	cert := &x509.Certificate{
-		SerialNumber: big.NewInt(2019),
+		SerialNumber: big.NewInt(time.Now().UnixNano()), // Unique serial number
 		Subject: pkix.Name{
+			CommonName:    host, // 🌍 Set CN to the target hostname
 			Organization:  []string{"Company, INC."},
 			Country:       []string{"US"},
 			Province:      []string{""},
@@ -97,12 +118,14 @@ func GenerateCertificate(ca *x509.Certificate, caPrivateKey *rsa.PrivateKey) (*C
 			StreetAddress: []string{"Golden Gate Bridge"},
 			PostalCode:    []string{"94016"},
 		},
-		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
 		NotBefore:    time.Now(),
-		NotAfter:     time.Now().AddDate(10, 0, 0),
+		NotAfter:     time.Now().AddDate(1, 0, 0), // Valid for 1 year
 		SubjectKeyId: []byte{1, 2, 3, 4, 6},
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
 		KeyUsage:     x509.KeyUsageDigitalSignature,
+
+		// 🏆 **Dynamically set SAN to match the intercepted website**
+		DNSNames: []string{host}, // The hostname of the intercepted request
 	}
 
 	certPrivateKey, err := rsa.GenerateKey(rand.Reader, 4096)
@@ -112,7 +135,7 @@ func GenerateCertificate(ca *x509.Certificate, caPrivateKey *rsa.PrivateKey) (*C
 
 	certBytes, err := x509.CreateCertificate(rand.Reader, cert, ca, &certPrivateKey.PublicKey, caPrivateKey)
 	if err != nil {
-		return nil, err
+		log.Fatal("[ERROR] Failed to create certificate:", err)
 	}
 
 	certPem := new(bytes.Buffer)
@@ -132,6 +155,7 @@ func GenerateCertificate(ca *x509.Certificate, caPrivateKey *rsa.PrivateKey) (*C
 	if err != nil {
 		return nil, err
 	}
+
 	return &Certificate{
 		certificate:   cert,
 		privateKey:    certPrivateKey,
@@ -141,9 +165,15 @@ func GenerateCertificate(ca *x509.Certificate, caPrivateKey *rsa.PrivateKey) (*C
 }
 
 func GenerateRootCA() (*Certificate, error) {
+	caPrivateKey, err := rsa.GenerateKey(rand.Reader, 4096)
+	if err != nil {
+		return nil, err
+	}
+
 	ca := &x509.Certificate{
 		SerialNumber: big.NewInt(2019),
 		Subject: pkix.Name{
+			CommonName:    "My Custom CA",
 			Organization:  []string{"Company, INC."},
 			Country:       []string{"US"},
 			Province:      []string{""},
@@ -157,15 +187,12 @@ func GenerateRootCA() (*Certificate, error) {
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
 		BasicConstraintsValid: true,
+		PublicKey:             &caPrivateKey.PublicKey, // **Ensure PublicKey is set**
 	}
 
-	caPrivateKey, err := rsa.GenerateKey(rand.Reader, 4096)
-	if err != nil {
-		return nil, err
-	}
 	caBytes, err := x509.CreateCertificate(rand.Reader, ca, ca, &caPrivateKey.PublicKey, caPrivateKey)
 	if err != nil {
-		return nil, err
+		log.Fatal("[ERROR] Failed to create root CA certificate:", err)
 	}
 
 	caPem := new(bytes.Buffer)
@@ -185,6 +212,7 @@ func GenerateRootCA() (*Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return &Certificate{
 		certificate:   ca,
 		privateKey:    caPrivateKey,

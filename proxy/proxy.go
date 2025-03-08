@@ -19,9 +19,11 @@ type DownstreamRequest struct {
 
 func downstreamRequestParser(data []byte) *DownstreamRequest {
 	strData := string(data)
+	fmt.Println(strData)
 	strDataLines := strings.Split(strData, "\r\n")
 	method := strings.Split(strDataLines[0], " ")[0]
-	hostName := strings.Split(strDataLines[1], " ")[1]
+	// hostName := strings.Split(strDataLines[1], " ")[1]
+	hostName := strings.Split(strDataLines[0], " ")[1]
 	var port string
 	if strings.Contains(hostName, ":") {
 		port = strings.Split(hostName, ":")[1]
@@ -66,45 +68,49 @@ func handleHTTPConnection(conn net.Conn, dr *DownstreamRequest) {
 }
 
 func handleHTTPSConnection(conn net.Conn, dr *DownstreamRequest, ca Certificate) {
-	fmt.Println("[+] got https request for " + dr.url)
+	fmt.Println("[+] Got HTTPS request for " + dr.url)
 
 	_, err := conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("[ERROR] Failed to send connection established response:", err)
 	}
 
-	cert, err := GenerateCertificate(ca.certificate, ca.privateKey)
+	// 🌍 Generate a new certificate dynamically for the requested host
+	cert, err := GenerateCertificate(ca.certificate, ca.privateKey, dr.host)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("[ERROR] Failed to generate certificate:", err)
 	}
 
 	tlsCert, err := tls.X509KeyPair(cert.certPem.Bytes(), cert.privateKeyPem.Bytes())
+	if err != nil {
+		log.Fatal("[ERROR] Failed to create X509 Key Pair:", err)
+	}
 
 	tlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{tlsCert},
 	}
+
+	// 🔐 Wrap the original TCP connection in TLS (to the browser)
 	tlsConn := tls.Server(conn, tlsConfig)
 	defer tlsConn.Close()
 
 	err = tlsConn.Handshake()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("[ERROR] TLS handshake failed:", err)
 	}
 
-	log.Println("[+] TLS handshake to the client successful for", dr.url)
+	log.Println("[+] TLS handshake successful for", dr.url)
 
+	// 🌍 Establish connection to the real target website
 	targetConn, err := net.Dial("tcp", dr.url)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("[ERROR] Failed to connect to target site:", err)
 	}
 	defer targetConn.Close()
-	fmt.Println(1)
 
-	go func() {
-		_, _ = io.Copy(targetConn, tlsConn)
-	}()
-
-	_, _ = io.Copy(tlsConn, targetConn)
+	// 🔁 **Bidirectional data transfer (Proxy <-> Browser <-> Target)**
+	go io.Copy(targetConn, tlsConn) // Send browser data to target
+	io.Copy(tlsConn, targetConn)    // Send target data back to browser
 }
 
 func StartProxy() {
