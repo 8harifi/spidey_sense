@@ -68,14 +68,15 @@ func handleHTTPConnection(conn net.Conn, dr *DownstreamRequest) {
 }
 
 func handleHTTPSConnection(conn net.Conn, dr *DownstreamRequest, ca Certificate) {
-	fmt.Println("[+] Got HTTPS request for " + dr.url)
+	log.Println("[+] Handling HTTPS request for:", dr.url)
 
+	// ✅ Inform the browser that the connection is established
 	_, err := conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 	if err != nil {
 		log.Fatal("[ERROR] Failed to send connection established response:", err)
 	}
 
-	// 🌍 Generate a new certificate dynamically for the requested host
+	// 🔐 Generate and use a fake certificate for MITM interception
 	cert, err := GenerateCertificate(ca.certificate, ca.privateKey, dr.host)
 	if err != nil {
 		log.Fatal("[ERROR] Failed to generate certificate:", err)
@@ -90,7 +91,7 @@ func handleHTTPSConnection(conn net.Conn, dr *DownstreamRequest, ca Certificate)
 		Certificates: []tls.Certificate{tlsCert},
 	}
 
-	// 🔐 Wrap the original TCP connection in TLS (to the browser)
+	// 🔒 Upgrade client connection (browser) to TLS
 	tlsConn := tls.Server(conn, tlsConfig)
 	defer tlsConn.Close()
 
@@ -99,18 +100,34 @@ func handleHTTPSConnection(conn net.Conn, dr *DownstreamRequest, ca Certificate)
 		log.Fatal("[ERROR] TLS handshake failed:", err)
 	}
 
-	log.Println("[+] TLS handshake successful for", dr.url)
+	log.Println("[+] TLS handshake successful for:", dr.url)
 
-	// 🌍 Establish connection to the real target website
+	// 🌍 Connect to the real target website
 	targetConn, err := net.Dial("tcp", dr.url)
 	if err != nil {
 		log.Fatal("[ERROR] Failed to connect to target site:", err)
 	}
 	defer targetConn.Close()
 
-	// 🔁 **Bidirectional data transfer (Proxy <-> Browser <-> Target)**
-	go io.Copy(targetConn, tlsConn) // Send browser data to target
-	io.Copy(tlsConn, targetConn)    // Send target data back to browser
+	log.Println("[+] Connected to target site:", dr.url)
+
+	// 🔁 **Bidirectional Communication (Full Duplex Proxying)**
+	go func() {
+		_, err := io.Copy(targetConn, tlsConn) // Browser > Proxy > Target
+		if err != nil {
+			log.Println("[ERROR] Failed to forward client data:", err)
+		} else {
+			log.Println("[+] successfully sent data from server to client throug proxy")
+		}
+	}()
+
+	_, err = io.Copy(tlsConn, targetConn) // Target > Proxy > Browser
+	if err != nil {
+		log.Println("[ERROR] Failed to forward target response:", err)
+	} else {
+		log.Println("[+] successfully sent data from client to server throug proxy")
+	}
+
 }
 
 func StartProxy() {
